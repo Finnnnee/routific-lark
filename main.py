@@ -12,7 +12,7 @@ ROUTIFIC_API_TOKEN = os.getenv("ROUTIFIC_API_TOKEN")
 LARK_ALERT_WEBHOOK = os.getenv("LARK_ALERT_WEBHOOK")
 
 # 【唯一需要修改】你的仓库地址
-WAREHOUSE_ADDRESS = "请替换为你的仓库完整地址（省+市+区+详细地址）"
+WAREHOUSE_ADDRESS = "55 Progress Ave, Toronto, ON M1P 2Y7"
 
 # 服务初始化
 app = FastAPI(title="Lark-Routific 智能配送系统（完整版）", version="3.0")
