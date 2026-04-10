@@ -1,9 +1,8 @@
 import os
-import json
 import requests
 from fastapi import FastAPI, Request
 
-# ===================== 环境变量配置（Render 后台配置）=====================
+# ==================== 环境变量 ====================
 LARK_APP_ID = os.getenv("LARK_APP_ID")
 LARK_APP_SECRET = os.getenv("LARK_APP_SECRET")
 LARK_BASE_TOKEN = os.getenv("LARK_BASE_TOKEN")
@@ -14,235 +13,98 @@ LARK_ALERT_WEBHOOK = os.getenv("LARK_ALERT_WEBHOOK")
 # 你的仓库地址
 WAREHOUSE_ADDRESS = "55 Progress Ave, Toronto, ON M1P 2Y7"
 
-# 服务初始化
-app = FastAPI(title="Lark-Routific 单订单智能配送系统", version="1.0")
+app = FastAPI(title="Lark + Routific Platform API")
 
-# ===================== 1. 获取飞书租户凭证 =====================
-def get_lark_tenant_token():
-    try:
-        url = "https://open.larksuite.com/open-apis/auth/v3/tenant_access_token/internal"
-        headers = {"Content-Type": "application/json"}
-        data = {
-            "app_id": LARK_APP_ID,
-            "app_secret": LARK_APP_SECRET
-        }
-        response = requests.post(url, headers=headers, json=data, timeout=15)
-        res = response.json()
-        if res.get("code") == 0:
-            return res.get("tenant_access_token", "")
-        print(f"飞书Token获取失败：{res}")
-        return ""
-    except Exception as e:
-        print(f"飞书Token异常：{str(e)}")
-        return ""
+# ==================== 告警 ====================
+def send_alert(title, msg):
+    if LARK_ALERT_WEBHOOK:
+        try:
+            requests.post(LARK_ALERT_WEBHOOK, json={
+                "msg_type": "text",
+                "content": {"text": f"{title}\n{msg}"}
+            }, timeout=3)
+        except:
+            pass
 
-# ===================== 2. 飞书群异常告警 =====================
-def send_alert(title, content):
-    if not LARK_ALERT_WEBHOOK:
-        return
-    try:
-        msg = {
-            "msg_type": "post",
-            "content": {
-                "post": {
-                    "zh_cn": {
-                        "title": title,
-                        "content": [[{"tag": "text", "text": content}]]
-                    }
+# ==================== 新版 Routific Platform API ====================
+def optimize_route(order):
+    url = "https://platform.routific.com/api/v1/optimize"
+    headers = {
+        "Authorization": f"Bearer {ROUTIFIC_API_TOKEN}",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "visits": [
+            {
+                "id": order["order_id"],
+                "location": {
+                    "address": order["address"]
+                },
+                "timeWindows": [{"start": "08:00", "end": "20:00"}],
+                "serviceDuration": 300
+            }
+        ],
+        "vehicles": [
+            {
+                "id": "driver",
+                "startLocation": {
+                    "address": WAREHOUSE_ADDRESS
+                },
+                "endLocation": {
+                    "address": WAREHOUSE_ADDRESS
                 }
             }
-        }
-        requests.post(LARK_ALERT_WEBHOOK, json=msg, timeout=5)
-    except Exception as e:
-        print(f"告警发送失败：{str(e)}")
+        ]
+    }
 
-# ===================== 3. 【官方稳定版】Routific 单订单路线规划 =====================
-def optimize_single_route(order):
     try:
-        # ✅ 官方稳定API地址，100%可解析
-        url = "https://api.routific.com/v1/vrp"
-        headers = {
-            "Authorization": f"Bearer {ROUTIFIC_API_TOKEN}",
-            "Content-Type": "application/json"
-        }
-
-        order_id = order.get("order_id")
-        address = order.get("address")
-        customer_name = order.get("customer_name")
-
-        if not order_id or not address:
-            send_alert("🚨 订单无效", f"订单 {order_id} 缺少订单号或地址")
-            return None
-
-        # 单订单请求体，完全符合Routific VRP API规范
-        payload = {
-            "visits": {
-                order_id: {
-                    "location": {"address": address},
-                    "start": "08:00",
-                    "end": "20:00",
-                    "duration": 10,
-                    "notes": f"订单：{order_id} | 客户：{customer_name}"
-                }
-            },
-            "fleet": {
-                "driver_001": {
-                    "start_location": {"address": WAREHOUSE_ADDRESS},
-                    "end_location": {"address": WAREHOUSE_ADDRESS},
-                    "capacity": 100
-                }
-            }
-        }
-
-        response = requests.post(url, json=payload, headers=headers, timeout=30)
-        res = response.json()
-        print(f"✅ Routific API 返回：{res}")
-
-        # 校验返回结果
-        if "solution" not in res or "driver_001" not in res.get("solution", {}):
-            send_alert("🚨 路径规划失败", f"Routific 返回结果：{res}")
-            return None
-
-        return res["solution"]["driver_001"]
-
+        resp = requests.post(url, json=payload, headers=headers, timeout=30)
+        print("Routific 返回:", resp.status_code, resp.text)
+        return resp.json()
     except Exception as e:
         send_alert("🚨 路线规划异常", str(e))
         return None
 
-# ===================== 4. 写回飞书：路线 + 预计到达时间 =====================
-def update_order(record_id, route_url, eta):
+# ==================== 飞书更新 ====================
+def update_lark(record_id, eta):
     try:
-        token = get_lark_tenant_token()
-        if not token:
-            send_alert("🚨 飞书更新失败", "无法获取有效 token")
-            return
-
-        url = f"https://open.larksuite.com/open-apis/bitable/v1/apps/{LARK_BASE_TOKEN}/tables/{LARK_TABLE_ID}/records/{record_id}"
-        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-
-        fields = {
-            "AI规划路线": route_url,
-            "预计到达时间": eta
-        }
-
-        data = {"fields": fields}
-        res = requests.put(url, json=data, headers=headers, timeout=15).json()
-
-        if res.get("code") == 0:
-            print(f"✅ 飞书更新成功：{record_id}")
-        else:
-            send_alert("🚨 飞书订单更新失败", f"记录 {record_id} 返回：{res}")
-    except Exception as e:
-        send_alert("🚨 飞书写入异常", f"记录 {record_id} 错误：{str(e)}")
-
-# ===================== 5. 推送飞书卡片给司机 =====================
-def send_lark_card_to_driver(driver_user_id, order_id, customer_name, address, route_url, eta):
-    if not driver_user_id:
-        return
-
-    try:
-        token = get_lark_tenant_token()
+        token_resp = requests.post(
+            "https://open.larksuite.com/open-apis/auth/v3/tenant_access_token/internal",
+            json={"app_id": LARK_APP_ID, "app_secret": LARK_APP_SECRET}
+        ).json()
+        token = token_resp.get("tenant_access_token")
         if not token:
             return
 
-        url = "https://open.larksuite.com/open-apis/im/v1/messages"
-        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        requests.put(
+            f"https://open.larksuite.com/open-apis/bitable/v1/apps/{LARK_BASE_TOKEN}/tables/{LARK_TABLE_ID}/records/{record_id}",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"fields": {"预计到达时间": eta}}
+        )
+    except:
+        pass
 
-        card = {
-            "config": {"wide_screen_mode": True},
-            "header": {
-                "title": {"tag": "plain_text", "content": "🚚 新配送任务已规划"},
-                "template": "blue"
-            },
-            "elements": [
-                {
-                    "tag": "div",
-                    "text": {
-                        "tag": "lark_md",
-                        "content": f"**订单号**：{order_id}\n**客户**：{customer_name}\n**地址**：{address}\n**预计到达**：{eta}"
-                    }
-                },
-                {"tag": "hr"},
-                {
-                    "tag": "action",
-                    "actions": [
-                        {
-                            "tag": "button",
-                            "text": {"tag": "plain_text", "content": "🧭 一键导航"},
-                            "type": "primary",
-                            "url": route_url if route_url else "https://www.google.com/maps"
-                        }
-                    ]
-                }
-            ]
-        }
-
-        payload = {
-            "receive_id": driver_user_id,
-            "content": json.dumps(card, ensure_ascii=False),
-            "msg_type": "interactive"
-        }
-
-        res = requests.post(url, headers=headers, json=payload, params={"receive_id_type": "user_id"}, timeout=15).json()
-        if res.get("code") == 0:
-            print(f"✅ 卡片推送成功：{driver_user_id}")
-        else:
-            print(f"❌ 卡片推送失败：{res}")
-    except Exception as e:
-        print(f"推送异常：{str(e)}")
-
-# ===================== 唯一接口：单订单触发 =====================
+# ==================== 主入口 ====================
 @app.post("/lark-webhook")
-async def lark_webhook(request: Request):
+async def webhook(request: Request):
     try:
-        # 解析飞书推送的JSON
         order = await request.json()
-        print(f"📩 飞书推送订单数据：{order}")
+        result = optimize_route(order)
 
-        # 调用路线规划
-        route_result = optimize_single_route(order)
-        if not route_result:
-            return {"code": 500, "msg": "路线规划失败"}
+        if not result or "solutions" not in result:
+            return {"code": 500, "msg": "规划失败"}
 
-        # 提取路线结果
-        full_route_url = route_result.get("google_map_url", "")
-        route = route_result.get("route", [])
+        solution = result["solutions"][0]
+        eta = solution.get("arrivalTime", "暂无")
+        update_lark(order.get("record_id"), eta)
 
-        # 遍历路线，更新飞书+推送司机
-        for stop in route:
-            if stop.get("type") == "VISIT":
-                eta = stop.get("arrival_time", "暂无")
-                update_order(
-                    order.get("record_id"),
-                    full_route_url,
-                    eta
-                )
-                send_lark_card_to_driver(
-                    order.get("driver_user_id"),
-                    order.get("order_id"),
-                    order.get("customer_name"),
-                    order.get("address"),
-                    full_route_url,
-                    eta
-                )
-
-        send_alert("✅ 订单处理完成", f"订单 {order.get('order_id')} 路线规划成功，已推送司机")
-        return {"code": 200, "msg": "✅ 单订单配送规划完成"}
+        return {"code": 200, "msg": "✅ 路线规划完成"}
 
     except Exception as e:
-        send_alert("🚨 单订单处理失败", str(e))
-        return {"code": 500, "msg": f"异常：{str(e)}"}
+        send_alert("🚨 处理失败", str(e))
+        return {"code": 500, "msg": str(e)}
 
-# ===================== 健康检查 =====================
 @app.get("/")
-async def root():
-    return {
-        "status": "running",
-        "routific_token_configured": bool(ROUTIFIC_API_TOKEN),
-        "lark_token_configured": bool(LARK_APP_ID and LARK_APP_SECRET)
-    }
-
-# ===================== 启动服务 =====================
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+def home():
+    return {"status": "running"}
