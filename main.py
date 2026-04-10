@@ -56,7 +56,7 @@ def send_alert(title, content):
     except Exception:
         pass
 
-# ===================== 3. Routific 全局最优路线规划（支持批量+智能排序）=====================
+# ===================== 3. Routific 全局最优路线规划 =====================
 def optimize_routes(orders):
     try:
         url = "https://api.routific.com/v1/vrp"
@@ -104,7 +104,7 @@ def optimize_routes(orders):
         send_alert("🚨 路线规划异常", str(e))
         return None
 
-# ===================== 4. 写回飞书：路线 + 时间 + 配送排序（Routific 决定）=====================
+# ===================== 4. 写回飞书 =====================
 def update_order(record_id, route_url, eta, sequence=None):
     try:
         token = get_lark_tenant_token()
@@ -207,23 +207,9 @@ def send_lark_card_to_driver(driver_user_id, order_id, customer_name, address, r
     except Exception as e:
         print(f"推送异常：{str(e)}")
 
-# ===================== 接口 1：单订单触发 =====================
-@app.post("/lark-webhook")
-async def lark_webhook(request: Request):
-    try:
-        data = await request.json()
-        return await batch_plan({"orders": [data]})
-    except Exception as e:
-        send_alert("🚨 单订单处理失败", str(e))
-        return {"code": 500, "msg": f"异常：{str(e)}"}
-
-
-# ===================== 接口 2：批量规划（Routific 智能排序）=====================
-# 修复版：支持直接传入字典
-@app.post("/batch-plan")
-async def batch_plan(data: dict):  # 这里改成 dict，不再用 request.json()
+# ===================== 【修复】内部执行规划，不依赖接口 =====================
+async def execute_batch_plan(data: dict):
     orders = data.get("orders", [])
-
     if not orders:
         return {"code": 400, "msg": "无有效订单"}
 
@@ -257,9 +243,28 @@ async def batch_plan(data: dict):  # 这里改成 dict，不再用 request.json(
                     eta,
                     seq=seq + 1
                 )
+    return {"code": 200, "msg": "✅ 规划完成"}
 
-    return {"code": 200, "msg": "✅ Routific 已完成全局最优规划"}
-    
+# ===================== 接口 1：单订单触发 =====================
+@app.post("/lark-webhook")
+async def lark_webhook(request: Request):
+    try:
+        data = await request.json()
+        return await execute_batch_plan({"orders": [data]})
+    except Exception as e:
+        send_alert("🚨 单订单处理失败", str(e))
+        return {"code": 500, "msg": f"异常：{str(e)}"}
+
+# ===================== 接口 2：批量规划 =====================
+@app.post("/batch-plan")
+async def batch_plan(request: Request):
+    try:
+        data = await request.json()
+        return await execute_batch_plan(data)
+    except Exception as e:
+        send_alert("🚨 批量规划异常", str(e))
+        return {"code": 500, "msg": f"异常：{str(e)}"}
+
 # ===================== 接口 3：司机实时位置回调 =====================
 @app.post("/driver-location")
 async def driver_location(request: Request):
