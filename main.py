@@ -11,7 +11,7 @@ LARK_TABLE_ID = os.getenv("LARK_TABLE_ID")
 ROUTIFIC_API_TOKEN = os.getenv("ROUTIFIC_API_TOKEN")
 LARK_ALERT_WEBHOOK = os.getenv("LARK_ALERT_WEBHOOK")
 
-# 【唯一需要修改】你的仓库地址
+# 你的仓库地址
 WAREHOUSE_ADDRESS = "55 Progress Ave, Toronto, ON M1P 2Y7"
 
 # 服务初始化
@@ -217,10 +217,11 @@ async def lark_webhook(request: Request):
         send_alert("🚨 单订单处理失败", str(e))
         return {"code": 500, "msg": f"异常：{str(e)}"}
 
+
 # ===================== 接口 2：批量规划（Routific 智能排序）=====================
+# 修复版：支持直接传入字典
 @app.post("/batch-plan")
-async def batch_plan(request: Request):
-    data = await request.json()
+async def batch_plan(data: dict):  # 这里改成 dict，不再用 request.json()
     orders = data.get("orders", [])
 
     if not orders:
@@ -258,7 +259,7 @@ async def batch_plan(request: Request):
                 )
 
     return {"code": 200, "msg": "✅ Routific 已完成全局最优规划"}
-
+    
 # ===================== 接口 3：司机实时位置回调 =====================
 @app.post("/driver-location")
 async def driver_location(request: Request):
